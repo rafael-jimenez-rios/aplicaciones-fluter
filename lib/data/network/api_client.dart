@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 // Permite comprobar el tipo de conexión disponible en el dispositivo.
 import 'package:connectivity_plus/connectivity_plus.dart';
 
@@ -20,8 +22,7 @@ class ApiClient {
   /// solo comprueba el estado de conectividad del dispositivo.
   static Future<bool> hasInternetConnection() async {
     // Obtiene los tipos de conexión disponibles.
-    final connectivityResult =
-        await Connectivity().checkConnectivity();
+    final connectivityResult = await Connectivity().checkConnectivity();
 
     // Devuelve false únicamente cuando no hay conexión.
     return !connectivityResult.contains(ConnectivityResult.none);
@@ -38,5 +39,31 @@ class ApiClient {
 
     // Envía la petición GET y espera la respuesta.
     return await http.get(url);
+  }
+
+  static Future<http.Response> post(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
+    return http.post(
+      Uri.parse('$baseUrl$endpoint'),
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+  }
+
+  static Future<http.Response> put(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
+    return http.put(
+      Uri.parse('$baseUrl$endpoint'),
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+  }
+
+  static Future<http.Response> delete(String endpoint) async {
+    return http.delete(Uri.parse('$baseUrl$endpoint'));
   }
 }

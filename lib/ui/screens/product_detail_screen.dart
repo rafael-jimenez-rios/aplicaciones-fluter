@@ -1,125 +1,51 @@
-﻿import 'dart:convert';
-import 'dart:async';
+﻿import 'package:flutter/material.dart';
 
-import 'package:flutter/material.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
+import '../controllers/product_detail_controller.dart';
+import 'product_form_screen.dart';
 
-import '../../data/daos/auth_dao.dart';
-import '../../data/network/api_client.dart';
-
+// Pantalla que muestra el detalle de un producto y maneja
+// estados de carga, error y permisos de administrador.
 class ProductDetailScreen extends StatefulWidget {
+  // Identificador del producto recibido desde la pantalla anterior.
   final int productId;
 
-  const ProductDetailScreen({
-    super.key,
-    required this.productId,
-  });
+  const ProductDetailScreen({super.key, required this.productId});
 
   @override
   State<ProductDetailScreen> createState() => _ProductDetailScreenState();
 }
 
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
-  final AuthDao _authDao = AuthDao();
-
-  Map<String, dynamic>? _product;
-  bool _isLoading = true;
-  bool _isAdmin = false;
-  String _errorMessage = '';
-  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  late final ProductDetailController _controller;
+  bool _unavailableDialogShown = false;
 
   @override
   void initState() {
     super.initState();
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
-      _handleConnectivityChange,
-    );
-    _loadSessionAndProduct();
+    _controller = ProductDetailController(productId: widget.productId)
+      ..addListener(_handleControllerChange)
+      ..initialize();
   }
 
-  void _handleConnectivityChange(List<ConnectivityResult> results) {
-    if (!mounted) return;
-
-    final isConnected = !results.contains(ConnectivityResult.none);
-    if (!isConnected) {
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'Sin conexión a internet';
-      });
-    } else if (_errorMessage.isNotEmpty) {
-      _loadProduct();
-    }
+  void _handleControllerChange() {
+    if (!_controller.isUnavailable || _unavailableDialogShown) return;
+    _unavailableDialogShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showUnavailableAndGoBack();
+    });
   }
 
   @override
   void dispose() {
-    _connectivitySubscription?.cancel();
+    _controller
+      ..removeListener(_handleControllerChange)
+      ..dispose();
     super.dispose();
   }
 
-  Future<void> _loadSessionAndProduct() async {
-    final role = await _authDao.getStoredRole();
-
-    if (!mounted) return;
-
-    setState(() {
-      _isAdmin = role == 'Administrador';
-    });
-
-    await _loadProduct();
-  }
-
-  Future<void> _loadProduct() async {
-    if (mounted) {
-      setState(() {
-        _isLoading = true;
-        _errorMessage = '';
-      });
-    }
-
-    try {
-      final isConnected = await ApiClient.hasInternetConnection();
-      if (!isConnected) {
-        if (!mounted) return;
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Sin conexión a internet';
-        });
-        return;
-      }
-
-      final response = await ApiClient.get('/products/${widget.productId}');
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map<String, dynamic>) {
-          setState(() {
-            _product = decoded;
-            _isLoading = false;
-            _errorMessage = '';
-          });
-          return;
-        }
-      }
-
-      _showUnavailableAndGoBack();
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'Sin conexión a internet';
-      });
-    }
-  }
-
+  // Muestra un diálogo indicando que el producto no está disponible y regresa.
   Future<void> _showUnavailableAndGoBack() async {
     if (!mounted) return;
-
-    setState(() {
-      _isLoading = false;
-    });
 
     await showDialog(
       context: context,
@@ -140,17 +66,73 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     }
   }
 
+  Future<void> _editProduct() async {
+    final product = _controller.product;
+    if (product == null) return;
+    final updatedProduct = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => ProductFormScreen(product: product)),
+    );
+    if (!mounted || updatedProduct == null) return;
+    _controller.applyUpdatedProduct(updatedProduct);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Producto actualizado correctamente')),
+    );
+  }
+
+  Future<void> _confirmDelete() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eliminar producto'),
+        content: const Text('¿Estás seguro de eliminar este producto?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: _controller.isDeleting
+                ? null
+                : () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final deleted = await _controller.deleteProduct();
+    if (!mounted) return;
+    if (deleted) {
+      Navigator.pop(context, true);
+    } else if (_controller.errorMessage.isNotEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_controller.errorMessage)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
+    // Mientras carga, muestra un spinner de carga.
+    if (_controller.isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    if (_errorMessage.isNotEmpty) {
+    // Si hubo un error, muestra un mensaje y un botón para reintentar.
+    if (_controller.errorMessage.isNotEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('Detalle del producto')),
         body: Center(
@@ -160,13 +142,13 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _errorMessage,
+                  _controller.errorMessage,
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 16),
                 ),
                 const SizedBox(height: 24),
                 ElevatedButton(
-                  onPressed: _loadProduct,
+                  onPressed: _controller.loadProduct,
                   child: const Text('Reintentar'),
                 ),
               ],
@@ -176,15 +158,15 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       );
     }
 
-    final product = _product;
+    // Extrae el producto actual; si es nulo, muestra un mensaje.
+    final product = _controller.product;
     if (product == null) {
       return const Scaffold(
-        body: Center(
-          child: Text('Producto no disponible'),
-        ),
+        body: Center(child: Text('Producto no disponible')),
       );
     }
 
+    // Toma los campos relevantes del JSON para mostrarlos en la UI.
     final title = product['title'] as String? ?? 'Sin título';
     final description = product['description'] as String? ?? 'Sin descripción';
     final category = product['category'] as String? ?? 'Sin categoría';
@@ -192,14 +174,13 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final image = product['image'] as String? ?? '';
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Detalle del producto'),
-      ),
+      appBar: AppBar(title: const Text('Detalle del producto')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Imagen principal del producto con fallback si falla la carga.
             Center(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
@@ -208,20 +189,21 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   height: 260,
                   width: double.infinity,
                   fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) =>
+                  errorBuilder: (_, _, _) =>
                       const Icon(Icons.image_not_supported, size: 80),
                 ),
               ),
             ),
             const SizedBox(height: 20),
+
+            // Título del producto.
             Text(
               title,
-              style: const TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.bold,
-              ),
+              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
+
+            // Precio formateado con dos decimales.
             Text(
               '\$${(price as num?)?.toStringAsFixed(2) ?? '0.00'}',
               style: const TextStyle(
@@ -231,39 +213,31 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               ),
             ),
             const SizedBox(height: 20),
+
+            // Sección de descripción.
             const Text(
               'Descripción',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            Text(
-              description,
-              style: const TextStyle(fontSize: 16),
-            ),
+            Text(description, style: const TextStyle(fontSize: 16)),
             const SizedBox(height: 20),
+
+            // Sección de categoría.
             const Text(
               'Categoría',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            Text(
-              category,
-              style: const TextStyle(fontSize: 16),
-            ),
-            if (_isAdmin) ...[
+            Text(category, style: const TextStyle(fontSize: 16)),
+
+            // Si el usuario es administrador, aparecen acciones de edición y eliminación.
+            if (_controller.isAdmin) ...[
               const SizedBox(height: 32),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: () {
-                    // Acciones futuras.
-                  },
+                  onPressed: _editProduct,
                   icon: const Icon(Icons.edit),
                   label: const Text('Editar'),
                 ),
@@ -276,9 +250,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                     backgroundColor: Colors.red,
                     foregroundColor: Colors.white,
                   ),
-                  onPressed: () {
-                    // Acciones futuras.
-                  },
+                  onPressed: _controller.isDeleting ? null : _confirmDelete,
                   icon: const Icon(Icons.delete),
                   label: const Text('Eliminar'),
                 ),
